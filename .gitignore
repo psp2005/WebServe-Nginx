@@ -1,0 +1,29 @@
+# ===== 빌드 산출물 =====
+# webserv : 최종 실행 파일 (Makefile의 $(NAME))
+webserv
+# *.o : 오브젝트 파일 (컴파일 중간 결과물)
+*.o
+# *.d : 헤더 의존성 파일 (Makefile이 자동 생성)
+*.d
+# obj/ : 오브젝트 모아두는 폴더
+obj/
+
+# ===== 채점/평가용 대용량 바이너리 & 문서 (레포에 올릴 필요 없음) =====
+# tester      : 42에서 제공한 채점 테스터 (Linux 실행 파일, ~7MB)
+tester
+# cgi_tester  : CGI 테스터 (Linux 실행 파일, ~4MB)
+cgi_tester
+# 과제 설명/평가 PDF
+web_serve.pdf
+webserv_eval.pdf
+# PDF에서 추출한 텍스트 (작업용 임시 파일)
+_assignment.txt
+
+# ===== 업로드 테스트로 생기는 파일들 =====
+www/upload/*
+!www/upload/.gitkeep
+
+# ===== 에디터/OS 부산물 =====
+.vscode/
+.DS_Store
+*.swp
