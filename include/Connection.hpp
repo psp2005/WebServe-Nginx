@@ -10,14 +10,16 @@
  *   - recv()/send() 호출 뒤에 errno 를 절대 검사하지 않습니다.
  *     반환값이 0 이하(0=상대가 닫음, -1=오류)면 그냥 연결을 닫습니다.
  *
- *  이 클래스는 소켓을 직접 poll 에 등록하지 않습니다. 그 일은 Server 가 하고,
- *  Connection 은 "지금 읽고 싶은지(wantsRead)/쓰고 싶은지(wantsWrite)"만 알려줍니다.
+ *  요청을 받는 일은 HttpRequest(파서)에게, 그 요청으로 무엇을 돌려줄지는
+ *  RequestHandler 에게 맡깁니다. Connection 은 그 사이에서 바이트를 나르고
+ *  상태(읽기/쓰기)를 관리하는 '중개자' 역할입니다.
  * ========================================================================== */
 
 #ifndef CONNECTION_HPP
 #define CONNECTION_HPP
 
 #include "Config.hpp"
+#include "HttpRequest.hpp"
 
 #include <string>
 #include <vector>
@@ -28,7 +30,7 @@ class Connection
 public:
     // fd        : 이 클라이언트와 통신할 소켓 디스크립터
     // servers   : 이 연결이 들어온 listen 소켓에 묶인 server 블록들
-    //             (나중에 Host 헤더로 가상호스트를 고를 때 사용)
+    //             (Host 헤더로 가상호스트를 고를 때 사용)
     Connection(int fd, const std::vector<const ServerConfig *> &servers);
     ~Connection();
 
@@ -51,17 +53,13 @@ private:
 
     int                                 _fd;
     State                               _state;
-    std::string                         _inBuf;     // 받은 요청을 모으는 버퍼
+    HttpRequest                         _request;   // 요청 파서(상태를 들고 있음)
     std::string                         _outBuf;    // 보낼 응답 전체
     std::size_t                         _outSent;   // _outBuf 중 지금까지 보낸 바이트 수
-    std::vector<const ServerConfig *>   _servers;   // 이 연결에서 후보가 되는 가상호스트들
+    std::vector<const ServerConfig *>   _servers;   // 이 연결의 가상호스트 후보들
 
-    // 요청 헤더의 끝(빈 줄, "\r\n\r\n")이 도착했는지 검사.
-    bool requestComplete() const;
-
-    // (임시) 고정 응답을 만들어 _outBuf 에 채웁니다.
-    // 다음 단계에서 HttpRequest 파싱 + RequestHandler 로 교체될 자리입니다.
-    void buildStubResponse();
+    // 요청이 완성/실패했을 때 응답 문자열을 만들어 _outBuf 에 채우고 쓰기 단계로.
+    void buildResponse();
 
     // 복사 금지: 소켓 fd 와 버퍼 상태를 가진 객체라 복사 의미가 없습니다.
     Connection(const Connection &);
