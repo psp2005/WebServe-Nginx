@@ -16,6 +16,7 @@
 #include <cstring>          // std::memset
 #include <csignal>          // signal, SIG_IGN
 #include <cstddef>          // std::size_t
+#include <set>              // std::set (이번 회차에 닫을 연결 모음)
 #include <unistd.h>         // close
 #include <fcntl.h>          // fcntl, F_SETFL, O_NONBLOCK
 #include <sys/socket.h>     // socket, bind, listen, accept, setsockopt
@@ -168,28 +169,32 @@ void Server::run()
 {
     while (!g_stop)
     {
-        // (1) 지금 감시할 fd 목록을 새로 구성.
-        std::vector<struct pollfd> pfds;
-        buildPollFds(pfds);
+        // (1) 지금 감시할 fd 목록과 "fd -> 소유 Connection" 맵을 새로 구성.
+        std::vector<struct pollfd>  pfds;
+        std::map<int, Connection *> owners;
+        buildPollSet(pfds, owners);
         if (pfds.empty())
-            break;      // 감시할 소켓이 하나도 없으면 종료(정상적으로는 도달 안 함)
+            break;      // 감시할 fd 가 하나도 없으면 종료(정상적으로는 도달 안 함)
 
-        // (2) 단일 poll() 로 모든 소켓의 읽기/쓰기 준비를 동시에 기다림.
-        //     타임아웃 500ms: 그 사이 종료 신호가 오면 다음 루프에서 빠져나가기 위함.
+        // (2) 단일 poll() 로 모든 fd(리스닝 소켓·클라이언트 소켓·CGI 파이프)의
+        //     읽기/쓰기 준비를 동시에 기다림. 타임아웃 500ms.
         int ready = poll(&pfds[0], pfds.size(), 500);
         if (ready < 0)
         {
-            // poll 자체가 중단(예: 신호로 EINTR)될 수 있음. 종료 요청이면 끝내고,
-            // 아니면 다음 루프로. (read/write 가 아니므로 errno 금지 대상은 아님)
+            // poll 중단(예: 신호 EINTR). 종료 요청이면 끝, 아니면 다음 루프.
             if (g_stop)
                 break;
             continue;
         }
         if (ready == 0)
-            continue;   // 타임아웃: 할 일 없음
+        {
+            tickConnections();      // 타임아웃: CGI 폭주/멈춤 감시 틱
+            continue;
+        }
 
-        // (3) 준비된 fd 들을 하나씩 처리.
-        //     pfds 는 이번 회차의 '스냅샷'이라, 도중에 연결을 닫아도 안전합니다.
+        // (3) 준비된 fd 들을 처리. 한 Connection 이 여러 fd 를 가질 수 있으므로,
+        //     이번 회차에 '닫기로 결정된' 연결은 set 에 모아 한 번만 닫습니다.
+        std::set<Connection *> toClose;
         for (std::size_t i = 0; i < pfds.size(); ++i)
         {
             short re = pfds[i].revents;
@@ -198,7 +203,7 @@ void Server::run()
 
             int fd = pfds[i].fd;
 
-            // (a) 리스닝 소켓에 신호 → 새 손님 받기
+            // (a) 리스닝 소켓 → 새 손님 받기
             if (isListener(fd))
             {
                 if (re & POLLIN)
@@ -206,38 +211,34 @@ void Server::run()
                 continue;
             }
 
-            // (b) 클라이언트 소켓
-            std::map<int, Connection *>::iterator it = _connections.find(fd);
-            if (it == _connections.end())
-                continue;       // 이미 닫힌 fd
+            // (b) 어떤 Connection 의 fd(소켓 또는 CGI 파이프)
+            std::map<int, Connection *>::iterator it = owners.find(fd);
+            if (it == owners.end())
+                continue;
             Connection *conn = it->second;
+            if (toClose.find(conn) != toClose.end())
+                continue;       // 이미 닫기로 한 연결은 건드리지 않음
 
-            bool keep = true;
-            if (re & (POLLERR | POLLHUP | POLLNVAL))
-            {
-                keep = false;   // 오류/상대 종료 → 닫기
-            }
-            else
-            {
-                if (keep && (re & POLLIN))
-                    keep = conn->onReadable();
-                if (keep && (re & POLLOUT))
-                    keep = conn->onWritable();
-            }
-
-            if (!keep)
-                closeConnection(fd);
+            if (!conn->onEvent(fd, re))
+                toClose.insert(conn);
         }
+
+        // (4) 닫기로 결정된 연결들을 정리.
+        for (std::set<Connection *>::iterator it = toClose.begin();
+             it != toClose.end(); ++it)
+            closeConnection((*it)->clientFd());
     }
 
     closeAll();
 }
 
-void Server::buildPollFds(std::vector<struct pollfd> &pfds) const
+void Server::buildPollSet(std::vector<struct pollfd> &pfds,
+                          std::map<int, Connection *> &owners) const
 {
     pfds.clear();
+    owners.clear();
 
-    // 리스닝 소켓: 새 연결을 받기 위해 항상 읽기(POLLIN) 감시.
+    // 리스닝 소켓: 새 연결을 받기 위해 항상 읽기(POLLIN) 감시. (소유자 없음)
     for (std::size_t i = 0; i < _listenFds.size(); ++i)
     {
         struct pollfd p;
@@ -247,23 +248,23 @@ void Server::buildPollFds(std::vector<struct pollfd> &pfds) const
         pfds.push_back(p);
     }
 
-    // 클라이언트 연결: 각자 원하는 방향(읽기/쓰기)만 감시.
+    // 각 연결이 감시받고 싶은 fd 들을 모으고, 그 fd 의 소유자를 기록.
     for (std::map<int, Connection *>::const_iterator it = _connections.begin();
          it != _connections.end(); ++it)
     {
-        const Connection *conn = it->second;
-        int events = 0;
-        if (conn->wantsRead())
-            events |= POLLIN;
-        if (conn->wantsWrite())
-            events |= POLLOUT;
-
-        struct pollfd p;
-        p.fd      = it->first;
-        p.events  = static_cast<short>(events);
-        p.revents = 0;
-        pfds.push_back(p);
+        Connection *conn = it->second;
+        std::size_t before = pfds.size();
+        conn->pollFds(pfds);
+        for (std::size_t k = before; k < pfds.size(); ++k)
+            owners[pfds[k].fd] = conn;
     }
+}
+
+void Server::tickConnections()
+{
+    for (std::map<int, Connection *>::iterator it = _connections.begin();
+         it != _connections.end(); ++it)
+        it->second->onIdleTick();
 }
 
 void Server::acceptNewClient(int listenFd)

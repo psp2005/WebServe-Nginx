@@ -132,50 +132,81 @@ std::string RequestHandler::resolvePath(const LocationConfig &loc,
     return joinPath(loc.root, rel);
 }
 
-/* ==============================  handle()  ============================== */
+/* ==============================  route()  ============================== */
 
-HttpResponse RequestHandler::handle(const HttpRequest &req)
+RequestHandler::Route RequestHandler::route(const HttpRequest &req)
 {
+    Route r;
+
     const ServerConfig *server = selectServer(req);
     if (!server)
-        return makeError(0, 500);
+    {
+        r.response = makeError(0, 500);
+        return r;
+    }
 
     // 상위 폴더 탈출(../) 방어.
     if (hasDotDot(req.path()))
-        return makeError(server, 403);
+    {
+        r.response = makeError(server, 403);
+        return r;
+    }
 
     // 경로에 맞는 라우트 찾기.
     const LocationConfig *loc = server->matchLocation(req.path());
     if (!loc)
-        return makeError(server, 404);
+    {
+        r.response = makeError(server, 404);
+        return r;
+    }
 
     // 리다이렉트 설정이면 바로 이동.
     if (loc->hasRedirect)
-        return makeRedirect(*loc);
+    {
+        r.response = makeRedirect(*loc);
+        return r;
+    }
 
     // 메서드 허용 검사.
     if (!loc->allowsMethod(req.method()))
     {
-        HttpResponse r = makeError(server, 405);
-        r.setHeader("Allow", joinMethods(*loc));
+        r.response = makeError(server, 405);
+        r.response.setHeader("Allow", joinMethods(*loc));
         return r;
     }
 
-    // CGI 경로(확장자 매칭)면 다음 단계 전까지 501.
+    // CGI 경로(확장자 매칭)면 CGI 처리 지시를 돌려줍니다.
     std::string ext = utils::getExtension(req.path());
-    if (!ext.empty() && !loc->cgiInterpreterFor(ext).empty())
-        return makeError(server, 501);
+    if (!ext.empty())
+    {
+        std::string interp = loc->cgiInterpreterFor(ext);
+        if (!interp.empty())
+        {
+            std::string scriptPath = resolvePath(*loc, req.path());
+            if (!utils::isRegularFile(scriptPath))
+            {
+                r.response = makeError(server, 404);    // 스크립트 없음
+                return r;
+            }
+            r.isCgi       = true;
+            r.scriptPath  = scriptPath;
+            r.interpreter = interp;
+            r.server      = server;
+            return r;
+        }
+    }
 
-    // 메서드별 처리.
+    // 메서드별 정적 처리.
     if (req.method() == "GET")
-        return handleGet(req, *server, *loc);
-    if (req.method() == "POST")
-        return handlePost(req, *server, *loc);
-    if (req.method() == "DELETE")
-        return handleDelete(req, *server, *loc);
+        r.response = handleGet(req, *server, *loc);
+    else if (req.method() == "POST")
+        r.response = handlePost(req, *server, *loc);
+    else if (req.method() == "DELETE")
+        r.response = handleDelete(req, *server, *loc);
+    else
+        r.response = makeError(server, 501);    // GET/POST/DELETE 외(예: PUT)
 
-    // GET/POST/DELETE 외(예: PUT)는 미구현.
-    return makeError(server, 501);
+    return r;
 }
 
 /* ===============================  GET  ================================= */

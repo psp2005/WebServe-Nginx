@@ -54,8 +54,13 @@ private:
     // 같은 host:port 는 한 번만 bind 하도록 묶어서 리스닝 소켓들을 준비.
     void setupListeners();
 
-    // 매 루프마다 현재 상태(리스닝+연결들)로 poll 용 배열을 새로 구성.
-    void buildPollFds(std::vector<struct pollfd> &pfds) const;
+    // 매 루프마다 poll 용 배열과 "fd -> 그 fd 를 소유한 Connection" 맵을 구성.
+    // (한 Connection 이 소켓 + CGI 파이프 등 여러 fd 를 가질 수 있으므로 맵이 필요)
+    void buildPollSet(std::vector<struct pollfd> &pfds,
+                      std::map<int, Connection *> &owners) const;
+
+    // 모든 연결에 "한가할 때 틱"을 보냅니다(CGI 타임아웃 감시).
+    void tickConnections();
 
     // 리스닝 소켓에 새 연결이 왔을 때 accept 해서 Connection 생성.
     void acceptNewClient(int listenFd);

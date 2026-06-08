@@ -30,11 +30,24 @@
 class RequestHandler
 {
 public:
+    // 라우팅 결과. 두 갈래입니다.
+    //   isCgi == false : response 에 완성된 응답이 들어 있음(정적 파일/업로드/에러 등).
+    //   isCgi == true  : 이 요청은 CGI 로 처리해야 함 → scriptPath/interpreter/server 사용.
+    struct Route
+    {
+        bool                isCgi;
+        HttpResponse        response;     // isCgi == false 일 때 사용
+        std::string         scriptPath;   // 실행할 스크립트 실제 경로 (isCgi)
+        std::string         interpreter;  // 인터프리터 경로 (isCgi)
+        const ServerConfig *server;       // 환경변수용 (isCgi)
+        Route() : isCgi(false), response(), scriptPath(), interpreter(), server(0) {}
+    };
+
     // servers: 이 연결(리스닝 소켓)에 묶인 가상호스트 후보들.
     explicit RequestHandler(const std::vector<const ServerConfig *> &servers);
 
-    // 완성된 요청을 받아 응답을 만듭니다.
-    HttpResponse handle(const HttpRequest &req);
+    // 완성된 요청을 받아 "정적 응답" 또는 "CGI 처리 지시"를 돌려줍니다.
+    Route route(const HttpRequest &req);
 
     // 요청 파싱이 실패했을 때(문법 오류 등) 쓸 에러 응답을 만듭니다.
     HttpResponse buildError(int code);

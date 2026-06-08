@@ -70,6 +70,11 @@ std::string HttpRequest::header(const std::string &name) const
     return std::string();
 }
 
+const std::map<std::string, std::string> &HttpRequest::headers() const
+{
+    return _headers;
+}
+
 void HttpRequest::fail(int status)
 {
     _error = status;

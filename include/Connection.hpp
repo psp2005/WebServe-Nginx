@@ -1,18 +1,18 @@
 /* ============================================================================
  *  Connection.hpp  —  "클라이언트 한 명과의 연결" 하나를 표현하는 클래스
  * ----------------------------------------------------------------------------
- *  웹 서버는 동시에 여러 명의 손님(브라우저)을 상대합니다. 손님 한 명당
- *  연결(소켓) 하나가 생기는데, 그 연결의 상태(지금 요청을 받는 중인지, 답을
- *  보내는 중인지)와 주고받는 데이터(버퍼)를 이 클래스가 들고 있습니다.
+ *  손님 한 명당 연결(소켓) 하나가 생기고, 그 상태(요청 받는 중/CGI 실행 중/
+ *  응답 보내는 중)와 버퍼를 이 클래스가 들고 있습니다.
  *
  *  중요한 채점 규칙(반드시 지킴):
- *   - recv()/send() 는 poll() 이 "준비됐다"고 알려줬을 때만 호출합니다.
- *   - recv()/send() 호출 뒤에 errno 를 절대 검사하지 않습니다.
- *     반환값이 0 이하(0=상대가 닫음, -1=오류)면 그냥 연결을 닫습니다.
+ *   - recv/send/read/write 는 poll() 이 "준비됐다"고 알린 fd 에만 호출.
+ *   - 그 뒤 errno 를 절대 검사하지 않고, 반환값<=0 이면 닫거나 종료로 처리.
  *
- *  요청을 받는 일은 HttpRequest(파서)에게, 그 요청으로 무엇을 돌려줄지는
- *  RequestHandler 에게 맡깁니다. Connection 은 그 사이에서 바이트를 나르고
- *  상태(읽기/쓰기)를 관리하는 '중개자' 역할입니다.
+ *  한 연결이 여러 개의 fd 를 가질 수 있습니다:
+ *   - 클라이언트 소켓 (항상)
+ *   - CGI 실행 시: CGI 의 stdin(우리가 본문을 씀)·stdout(우리가 출력을 읽음) 파이프
+ *  그래서 Server 에게 "내가 감시받고 싶은 fd 목록"을 pollFds() 로 알려주고,
+ *  어떤 fd 에 이벤트가 나면 onEvent(fd) 로 처리합니다.
  * ========================================================================== */
 
 #ifndef CONNECTION_HPP
@@ -20,48 +20,63 @@
 
 #include "Config.hpp"
 #include "HttpRequest.hpp"
+#include "CgiHandler.hpp"
 
 #include <string>
 #include <vector>
-#include <cstddef>      // std::size_t
+#include <cstddef>
+#include <poll.h>       // struct pollfd
 
 class Connection
 {
 public:
-    // fd        : 이 클라이언트와 통신할 소켓 디스크립터
-    // servers   : 이 연결이 들어온 listen 소켓에 묶인 server 블록들
-    //             (Host 헤더로 가상호스트를 고를 때 사용)
     Connection(int fd, const std::vector<const ServerConfig *> &servers);
     ~Connection();
 
-    int  fd() const;
+    // 이 연결의 클라이언트 소켓 fd.
+    int  clientFd() const;
 
-    // poll 에 등록할 관심사: 지금 읽고 싶은가 / 쓰고 싶은가
-    bool wantsRead() const;
-    bool wantsWrite() const;
+    // 이 연결이 감시받고 싶은 fd 들(소켓 + CGI 파이프)을 out 에 추가합니다.
+    void pollFds(std::vector<struct pollfd> &out) const;
 
-    // poll 이 "읽기 가능"이라고 알릴 때 호출. 반환값 false = 연결을 닫아야 함.
-    bool onReadable();
-    // poll 이 "쓰기 가능"이라고 알릴 때 호출. 반환값 false = 연결을 닫아야 함.
-    bool onWritable();
+    // 어떤 fd 에 이벤트가 발생했을 때 호출. 반환값 false = 연결을 닫아야 함.
+    bool onEvent(int fd, short revents);
+
+    // poll 이 한가할 때(타임아웃마다) 주기적으로 호출 — CGI 폭주/멈춤 감시용.
+    void onIdleTick();
 
 private:
-    // 연결의 두 가지 단계.
-    //   READING : 아직 요청을 다 못 받음 → 더 읽어야 함
-    //   WRITING : 응답을 만들어 두고 보내는 중
-    enum State { READING, WRITING };
+    // 연결의 단계.
+    //   READING : 요청을 받는 중
+    //   RUN_CGI : CGI 프로세스를 실행/통신하는 중
+    //   WRITING : 응답을 보내는 중
+    enum State { READING, RUN_CGI, WRITING };
 
     int                                 _fd;
     State                               _state;
-    HttpRequest                         _request;   // 요청 파서(상태를 들고 있음)
-    std::string                         _outBuf;    // 보낼 응답 전체
-    std::size_t                         _outSent;   // _outBuf 중 지금까지 보낸 바이트 수
-    std::vector<const ServerConfig *>   _servers;   // 이 연결의 가상호스트 후보들
+    HttpRequest                         _request;
+    std::string                         _outBuf;
+    std::size_t                         _outSent;
+    std::vector<const ServerConfig *>   _servers;
 
-    // 요청이 완성/실패했을 때 응답 문자열을 만들어 _outBuf 에 채우고 쓰기 단계로.
-    void buildResponse();
+    // ---- CGI 상태 ----
+    CgiHandler::Process                 _cgi;           // pid/inFd/outFd
+    std::size_t                         _cgiBodySent;   // 본문 중 CGI 로 보낸 양
+    std::string                         _cgiOut;        // CGI 출력 누적
+    int                                 _cgiTicksLeft;  // 남은 타임아웃 틱
 
-    // 복사 금지: 소켓 fd 와 버퍼 상태를 가진 객체라 복사 의미가 없습니다.
+    // ---- 단계별 내부 처리 ----
+    bool onClientReadable();        // 요청 바이트 수신 + 파싱
+    bool onClientWritable();        // 응답 전송
+    void routeRequest();            // 요청 완성/실패 후: CGI 시작 or 응답 준비
+    bool onCgiWritable();           // CGI stdin 으로 본문 쓰기
+    bool onCgiReadable();           // CGI stdout 읽기
+    void finishCgi();               // CGI 종료 → 출력으로 응답 만들고 WRITING
+    void reapCgi();                 // 자식 프로세스 회수(좀비 방지)
+    void closeCgiFds();             // CGI 파이프 fd 닫기
+    void setResponse(const std::string &serialized);    // 응답 세팅 후 WRITING 전환
+    void failWith(int status);      // 상태코드로 즉시 응답(에러)
+
     Connection(const Connection &);
     Connection &operator=(const Connection &);
 };

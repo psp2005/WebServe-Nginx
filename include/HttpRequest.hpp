@@ -58,6 +58,9 @@ public:
     std::string        header(const std::string &name) const;
     bool               hasHeader(const std::string &name) const;
 
+    // 모든 헤더(소문자 이름 -> 값). CGI 의 HTTP_* 환경변수를 만들 때 순회용.
+    const std::map<std::string, std::string> &headers() const;
+
 private:
     // 파싱 단계(상태 기계).
     enum Stage
