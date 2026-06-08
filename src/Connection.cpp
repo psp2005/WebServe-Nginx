@@ -25,8 +25,10 @@
 
 // 한 번에 읽고/쓸 최대 바이트 수.
 static const std::size_t kChunk = 4096;
-// CGI 출력 누적 상한(폭주 방어).
-static const std::size_t kCgiMaxOutput = 16 * 1024 * 1024;
+// CGI 출력 누적 상한(폭주 방어). 큰 본문을 그대로 돌려주는 CGI(예: 업로드
+// echo)도 있으므로 넉넉히 둡니다. (현재는 출력을 메모리에 모았다가 보내는
+// 방식 — 추후 스트리밍으로 바꾸면 이 상한과 메모리 사용을 줄일 수 있음.)
+static const std::size_t kCgiMaxOutput = 200 * 1024 * 1024;
 // CGI 타임아웃: onIdleTick 은 한가할 때 약 0.5초마다 호출되므로 60틱 ≈ 30초.
 static const int kCgiTimeoutTicks = 60;
 

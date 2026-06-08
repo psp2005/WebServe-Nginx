@@ -31,6 +31,12 @@ void HttpResponse::setBody(const std::string &body)
     _headers["Content-Length"] = utils::toString(static_cast<long>(_body.size()));
 }
 
+void HttpResponse::stripBody()
+{
+    // 본문만 지우고 Content-Length 는 유지(HEAD 응답).
+    _body.clear();
+}
+
 int HttpResponse::code() const
 {
     return _status;

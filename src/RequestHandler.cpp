@@ -167,11 +167,23 @@ RequestHandler::Route RequestHandler::route(const HttpRequest &req)
         return r;
     }
 
+    // HEAD 는 GET 과 같지만 본문 없이 헤더만 돌려줍니다(아래 dispatch 에서 처리).
+    // 단, 허용 검사는 엄격하게: config 의 methods 에 명시된 메서드만 통과시킵니다.
+    // (예: methods 가 GET 만이면 HEAD 는 405 — "GET ONLY" 의 엄격한 해석)
+    const bool isHead = (req.method() == "HEAD");
+
     // 메서드 허용 검사.
     if (!loc->allowsMethod(req.method()))
     {
         r.response = makeError(server, 405);
         r.response.setHeader("Allow", joinMethods(*loc));
+        return r;
+    }
+
+    // 이 경로에 별도 본문 제한이 있으면 검사(없으면 server 레벨 제한이 파서에서 이미 적용됨).
+    if (loc->hasMaxBodySize && req.body().size() > loc->maxBodySize)
+    {
+        r.response = makeError(server, 413);
         return r;
     }
 
@@ -182,14 +194,11 @@ RequestHandler::Route RequestHandler::route(const HttpRequest &req)
         std::string interp = loc->cgiInterpreterFor(ext);
         if (!interp.empty())
         {
-            std::string scriptPath = resolvePath(*loc, req.path());
-            if (!utils::isRegularFile(scriptPath))
-            {
-                r.response = makeError(server, 404);    // 스크립트 없음
-                return r;
-            }
+            // 스크립트 존재 여부는 인터프리터가 판단하게 둡니다(없으면 보통
+            // 인터프리터가 빈 출력으로 끝나 502 가 됨). 일부 CGI 는 파일 없이도
+            // 동작하므로 서버가 미리 404 로 막지 않습니다.
             r.isCgi       = true;
-            r.scriptPath  = scriptPath;
+            r.scriptPath  = resolvePath(*loc, req.path());
             r.interpreter = interp;
             r.server      = server;
             return r;
@@ -197,14 +206,18 @@ RequestHandler::Route RequestHandler::route(const HttpRequest &req)
     }
 
     // 메서드별 정적 처리.
-    if (req.method() == "GET")
+    if (req.method() == "GET" || isHead)
+    {
         r.response = handleGet(req, *server, *loc);
+        if (isHead)
+            r.response.stripBody();     // HEAD: 헤더(Content-Length 포함)만, 본문은 제외
+    }
     else if (req.method() == "POST")
         r.response = handlePost(req, *server, *loc);
     else if (req.method() == "DELETE")
         r.response = handleDelete(req, *server, *loc);
     else
-        r.response = makeError(server, 501);    // GET/POST/DELETE 외(예: PUT)
+        r.response = makeError(server, 501);    // GET/POST/DELETE/HEAD 외(예: PUT)
 
     return r;
 }
@@ -229,8 +242,8 @@ HttpResponse RequestHandler::handleGet(const HttpRequest &req,
         // 2) autoindex 켜져 있으면 디렉터리 목록.
         if (loc.autoindex)
             return autoIndex(fsPath, req.path());
-        // 3) 둘 다 아니면 접근 금지.
-        return makeError(&server, 403);
+        // 3) index 도 목록도 없으면 보여줄 게 없음 → 404(자원 없음).
+        return makeError(&server, 404);
     }
 
     if (utils::isRegularFile(fsPath))
@@ -301,9 +314,18 @@ HttpResponse RequestHandler::handlePost(const HttpRequest &req,
                                         const ServerConfig &server,
                                         const LocationConfig &loc)
 {
-    // 업로드 폴더가 설정돼 있어야 본문을 저장할 수 있음.
+    // 업로드 폴더가 없으면 본문을 저장할 곳이 없으므로, 받기만 하고 200 으로 확인.
+    // (POST 가 허용된 경로인데 저장/CGI 대상이 없을 때의 합리적 기본 동작)
     if (!loc.hasUpload())
-        return makeError(&server, 403);
+    {
+        HttpResponse r;
+        r.setStatus(200);
+        r.setHeader("Server", "webserv");
+        r.setHeader("Content-Type", "text/plain; charset=utf-8");
+        r.setHeader("Connection", "close");
+        r.setBody("OK\n");
+        return r;
+    }
 
     // 저장할 파일명은 요청 경로의 마지막 조각을 사용.
     std::string name = lastSegment(req.path());

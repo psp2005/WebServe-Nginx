@@ -17,6 +17,8 @@ LocationConfig::LocationConfig()
       methods(),
       uploadStore(),
       cgi(),
+      hasMaxBodySize(false),
+      maxBodySize(0),
       hasRedirect(false),
       redirectCode(0),
       redirectTarget()

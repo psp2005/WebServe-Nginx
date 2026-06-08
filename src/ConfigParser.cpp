@@ -375,6 +375,17 @@ void ConfigParser::applyLocationDirective(LocationConfig &loc,
             throw ParseError(atLine("upload_store 는 인자 1개가 필요합니다", line));
         loc.uploadStore = args[0];
     }
+    else if (name == "client_max_body_size")
+    {
+        // 이 경로에만 적용되는 본문 최대 크기(server 의 같은 지시어를 덮어씀).
+        if (args.size() != 1)
+            throw ParseError(atLine("client_max_body_size 는 인자 1개가 필요합니다", line));
+        std::size_t bytes = 0;
+        if (!utils::parseSize(args[0], bytes))
+            throw ParseError(atLine("client_max_body_size 형식이 잘못되었습니다(예: 100, 10M)", line));
+        loc.hasMaxBodySize = true;
+        loc.maxBodySize    = bytes;
+    }
     else if (name == "cgi")
     {
         // "cgi .py /usr/bin/python3;" -> 확장자 + 인터프리터 경로

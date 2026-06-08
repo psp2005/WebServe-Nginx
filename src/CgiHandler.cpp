@@ -55,8 +55,11 @@ std::vector<std::string> CgiHandler::buildEnv(const HttpRequest &req,
     env.push_back("REQUEST_METHOD=" + req.method());
     env.push_back("SCRIPT_NAME=" + req.path());
     env.push_back("SCRIPT_FILENAME=" + scriptPath);
-    env.push_back("PATH_INFO=" + scriptPath);
+    // PATH_INFO / REQUEST_URI 는 '파일 경로'가 아니라 '요청 URL 경로'입니다.
+    // (일부 CGI 는 Host 헤더와 합쳐 URL 을 구성·검증하므로 URL 경로여야 함)
+    env.push_back("PATH_INFO=" + req.path());
     env.push_back("PATH_TRANSLATED=" + scriptPath);
+    env.push_back("REQUEST_URI=" + req.target());
     env.push_back("QUERY_STRING=" + req.query());
     env.push_back("REMOTE_ADDR=127.0.0.1");
 

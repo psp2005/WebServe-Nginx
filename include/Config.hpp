@@ -57,6 +57,10 @@ public:
     // 확장자 -> CGI 인터프리터 경로. 예) ".py" -> "/usr/bin/python3"
     std::map<std::string, std::string>  cgi;
 
+    // 이 경로에만 적용할 본문 최대 크기(설정 시). 없으면 server 값을 따름.
+    bool                                hasMaxBodySize;
+    std::size_t                         maxBodySize;
+
     // ---- 리다이렉트(다른 주소로 보내기) 설정 ----
     bool                                hasRedirect;    // return 지시어가 있었는지
     int                                 redirectCode;   // 상태코드 (예: 301)

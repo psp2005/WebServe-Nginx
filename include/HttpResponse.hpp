@@ -35,6 +35,10 @@ public:
     // 본문을 설정하고, 그 길이에 맞춰 Content-Length 헤더를 자동으로 채웁니다.
     void setBody(const std::string &body);
 
+    // 본문만 비우고 Content-Length 헤더는 그대로 둡니다(HEAD 응답용:
+    // GET 과 같은 헤더를 주되 본문은 보내지 않음).
+    void stripBody();
+
     // 위 설정들을 모아 '완성된 HTTP 응답 문자열'로 직렬화합니다.
     std::string toString() const;
 
